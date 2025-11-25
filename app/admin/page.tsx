@@ -8,7 +8,6 @@ import { getFirestore, collection, addDoc, updateDoc, doc, deleteDoc, query, onS
 
 const getFirebaseConfig = () => {
     // 1. Check for Vercel/Next.js Environment Variables (Highest Priority)
-    // NOTE: This uses optional chaining logic on `process` to prevent Vercel build failure.
     const externalConfig = {
         apiKey: typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_FIREBASE_API_KEY : undefined,
         authDomain: typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN : undefined,
@@ -17,14 +16,16 @@ const getFirebaseConfig = () => {
     };
     
     // 2. Check for Canvas Globals (Second Priority for Preview)
-    const isCanvasEnv = typeof __app_id !== 'undefined';
+    // CRITICAL: We check for the global variable's existence as a string/type check
+    const isCanvasEnv = typeof window !== 'undefined' && typeof __app_id !== 'undefined';
     
     if (isCanvasEnv) {
         try {
+            // These globals are only accessed if we confirm they exist in the environment
             const canvasConfig = JSON.parse(__firebase_config);
             const initialAuthToken = __initial_auth_token;
             
-            // CRITICAL FIX: Use the Vercel Project ID if set, or the Canvas ID as a fallback for the path
+            // Use the Vercel Project ID if set, or the Canvas ID as a fallback for the path
             const vercelProjectId = externalConfig.projectId;
             const finalAppId = vercelProjectId || __app_id; 
 
@@ -32,7 +33,8 @@ const getFirebaseConfig = () => {
                 firebaseConfig: canvasConfig, 
                 initialAuthToken, 
                 appId: finalAppId, 
-                isCanvasEnv: true 
+                isCanvasEnv: true,
+                externalConfig // Pass the detected external config for diagnostics
             };
         } catch (e) {
             // console.error("Canvas Global Configuration Error:", e);
@@ -46,7 +48,8 @@ const getFirebaseConfig = () => {
             firebaseConfig: externalConfig, 
             initialAuthToken: undefined,
             appId: externalConfig.projectId, // Use Project ID for path
-            isCanvasEnv: false
+            isCanvasEnv: false,
+            externalConfig
         };
     }
 
@@ -55,7 +58,8 @@ const getFirebaseConfig = () => {
         firebaseConfig: {}, 
         initialAuthToken: undefined, 
         appId: 'default-app-id', 
-        isCanvasEnv: false
+        isCanvasEnv: false,
+        externalConfig
     };
 };
 
@@ -67,12 +71,12 @@ const useFirebase = () => {
     const [authReady, setAuthReady] = useState(false);
     const [error, setError] = useState(null);
     
-    const { firebaseConfig, initialAuthToken, appId } = getFirebaseConfig();
+    const { firebaseConfig, initialAuthToken, appId, externalConfig } = getFirebaseConfig();
 
     // The core initialization logic
     useEffect(() => {
-        if (!firebaseConfig || !firebaseConfig.apiKey) {
-            setError("ERROR: Firebase configuration keys are missing. Please ensure Vercel environment variables are set.");
+        if (!firebaseConfig && appId === 'default-app-id') {
+            setError("ERROR: Firebase configuration is missing. Please ensure Vercel environment variables are set.");
             setAuthReady(true);
             return;
         }
@@ -84,16 +88,14 @@ const useFirebase = () => {
             
             const initializeAuth = async () => {
                 try {
-                    // Sign in using the custom token provided by the environment 
                     if (initialAuthToken) {
                         await signInWithCustomToken(auth, initialAuthToken);
                     } else {
-                        // Fallback to anonymous sign-in for local dev/unauthenticated use
                         await signInAnonymously(auth); 
                     }
                 } catch (authError) {
                     // console.error("Firebase Auth Failed:", authError);
-                    setError(`Authentication failed: ${authError.code}. Check Authorized domains/keys.`);
+                    setError(`Authentication failed: ${authError.code}`);
                 }
             };
 
@@ -118,13 +120,13 @@ const useFirebase = () => {
         }
     }, [initialAuthToken, JSON.stringify(firebaseConfig)]);
 
-    return { db, userId, authReady, error, appId };
+    return { db, userId, authReady, error, setError, appId, firebaseConfig, externalConfig };
 };
 
 // --- MAIN ADMIN COMPONENT ---
 
 export default function AdminPage() {
-    const { db, userId, authReady, error, appId } = useFirebase();
+    const { db, userId, authReady, error, setError, appId, firebaseConfig, externalConfig } = useFirebase();
     const [photos, setPhotos] = useState([]);
     const [formData, setFormData] = useState({ url: '', caption: '' });
     const [message, setMessage] = useState('');
@@ -279,6 +281,26 @@ export default function AdminPage() {
                     <p className="text-sm">{error}</p>
                 </div>
             )}
+            
+            {/* DIAGNOSTIC BLOCK */}
+            {error && (
+                <div className="bg-slate-800 p-4 rounded mb-6 border border-slate-700 space-y-1 text-xs">
+                    <p className="font-bold text-amber-500">CONFIGURATION DIAGNOSTIC</p>
+                    <p>
+                        <span className="font-mono text-slate-400 mr-2">Project ID (Path):</span> 
+                        <span className="text-white">{appId}</span>
+                    </p>
+                    <p>
+                        <span className="font-mono text-slate-400 mr-2">Auth Domain:</span> 
+                        <span className="text-white">{firebaseConfig.authDomain || 'MISSING'}</span>
+                    </p>
+                    <p className="text-red-300">
+                        *If Auth Domain is MISSING or INCORRECT, check NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN in .env.local/Vercel.
+                    </p>
+                </div>
+            )}
+            {/* END DIAGNOSTIC BLOCK */}
+
 
             {!isAuthorized && (
                 <div className="bg-amber-900/50 text-amber-200 p-4 rounded mb-6 border border-amber-700">

@@ -116,7 +116,7 @@ const useFirebase = () => {
                     }
                 } catch (authError) {
                     // console.error("Firebase Auth Failed:", authError);
-                    setError(`Authentication failed. Check setup: ${authError.code}`);
+                    setError(`Authentication failed: ${authError.code}`);
                 }
             };
 
@@ -139,14 +139,14 @@ const useFirebase = () => {
         }
     }, [initialAuthToken, JSON.stringify(firebaseConfig)]);
 
-    return { db, userId, authReady, error, setError, appId }; // <-- FIXED: Exporting setError
+    return { db, userId, authReady, error, setError, appId, firebaseConfig };
 };
 
 
 // --- MAIN APP COMPONENT ---
 
 export default function Home() {
-  const { db, userId, authReady, error, setError, appId } = useFirebase(); // <-- FIXED: Destructuring setError
+  const { db, userId, authReady, error, setError, appId, firebaseConfig } = useFirebase();
   const [photos, setPhotos] = useState([]);
   const [featuredPhoto, setFeaturedPhoto] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -156,7 +156,7 @@ export default function Home() {
     if (!db || !authReady) {
       if (!authReady) return; 
       if (appId === 'default-app-id') {
-         setError("App ID not configured. Check Vercel environment variables."); // <-- FIXED: setError is now available
+         setError("App ID not configured. Check Vercel environment variables."); 
          setLoading(false);
          return;
       }
@@ -190,7 +190,7 @@ export default function Home() {
 
     }, (dbError) => {
         // console.error("Firestore Error fetching photos:", dbError);
-        setError("Error fetching photos. Please check that Firestore Security Rules allow public read access."); // <-- FIXED
+        setError("Error fetching photos. Please check that Firestore Security Rules allow public read access."); 
         setLoading(false);
     });
 
@@ -296,7 +296,29 @@ export default function Home() {
                 A selection of moments, posted directly from the secure archive.
             </p>
             {(isLoading || !authReady) && <p className="text-slate-500 mt-4">Initializing connection...</p>}
-            {error && <p className="text-red-500 mt-4">Error: {error}</p>}
+            {error && (
+                <div className="bg-red-900/50 text-red-300 p-4 rounded mt-4 border border-red-700 space-y-2 text-left">
+                    <p className="font-bold">Connection Error Detected:</p>
+                    <p className="text-sm">
+                        <span className="font-mono text-amber-300 mr-2">CODE:</span> {error}
+                    </p>
+                    <p className="text-sm">
+                        <span className="font-mono text-amber-300 mr-2">API Key:</span> {firebaseConfig.apiKey ? 'Set' : 'Missing!'}
+                    </p>
+                    <p className="text-sm">
+                        <span className="font-mono text-amber-300 mr-2">Auth Domain:</span> {firebaseConfig.authDomain || 'Missing!'}
+                    </p>
+                    <p className="text-sm">
+                        <span className="font-mono text-amber-300 mr-2">Project ID:</span> {firebaseConfig.projectId || 'Missing!'}
+                    </p>
+                    <p className="text-sm">
+                        <span className="font-mono text-amber-300 mr-2">Path ID:</span> {appId}
+                    </p>
+                    <p className="text-xs text-red-400 font-bold mt-2">
+                        ACTION: Please verify your .env.local file (for local) or Vercel Environment Variables (for deployment) match the exact keys from your Firebase Web App configuration.
+                    </p>
+                </div>
+            )}
         </div>
 
         {/* Featured Photo of the Day */}
