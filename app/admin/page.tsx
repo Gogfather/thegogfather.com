@@ -16,7 +16,7 @@ declare global {
 }
 
 // Function to sanitize IDs that might contain path separators (like Canvas IDs)
-const sanitizeId = (id) => {
+const sanitizeId = (id: string | undefined): string => {
     if (!id) return 'default-app-id';
     // Replace any character that is not alphanumeric, hyphen, or underscore with a hyphen
     return id.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -218,7 +218,7 @@ export default function AdminPage() {
         }
     };
 
-    const handleFeaturePhoto = async (id) => {
+    const handleFeaturePhoto = async (id: string) => {
         if (!isAuthorized) {
             setMessage("Error: Not authorized. Write operations require a non-anonymous sign-in.");
             return;
@@ -248,7 +248,7 @@ export default function AdminPage() {
         }
     };
 
-    const handleDeletePhoto = async (id) => {
+    const handleDeletePhoto = async (id: string) => {
         if (!isAuthorized) {
             setMessage("Error: Not authorized. Write operations require a non-anonymous sign-in.");
             return;
