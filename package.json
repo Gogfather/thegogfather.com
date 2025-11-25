@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "echo \"Vercel Project ID: $NEXT_PUBLIC_FIREBASE_PROJECT_ID\" && next build",
+    "build": "echo \"Vercel Project ID: $NEXT_PUBLIC_FIREBASE_APP_ID\" && next build",
     "start": "next start",
     "lint": "eslint"
   },
