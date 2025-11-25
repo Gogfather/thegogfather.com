@@ -139,14 +139,14 @@ const useFirebase = () => {
         }
     }, [initialAuthToken, JSON.stringify(firebaseConfig)]);
 
-    return { db, userId, authReady, error, appId };
+    return { db, userId, authReady, error, setError, appId }; // <-- FIXED: Exporting setError
 };
 
 
 // --- MAIN APP COMPONENT ---
 
 export default function Home() {
-  const { db, userId, authReady, error, appId } = useFirebase();
+  const { db, userId, authReady, error, setError, appId } = useFirebase(); // <-- FIXED: Destructuring setError
   const [photos, setPhotos] = useState([]);
   const [featuredPhoto, setFeaturedPhoto] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -156,7 +156,7 @@ export default function Home() {
     if (!db || !authReady) {
       if (!authReady) return; 
       if (appId === 'default-app-id') {
-         setError("App ID not configured. Check Vercel environment variables.");
+         setError("App ID not configured. Check Vercel environment variables."); // <-- FIXED: setError is now available
          setLoading(false);
          return;
       }
@@ -190,7 +190,7 @@ export default function Home() {
 
     }, (dbError) => {
         // console.error("Firestore Error fetching photos:", dbError);
-        setError("Error fetching photos. Please check that Firestore Security Rules allow public read access.");
+        setError("Error fetching photos. Please check that Firestore Security Rules allow public read access."); // <-- FIXED
         setLoading(false);
     });
 
