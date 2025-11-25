@@ -1,15 +1,11 @@
 'use client';
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, User } from 'firebase/auth';
-import { getFirestore, collection, query, onSnapshot, orderBy, Timestamp, where } from 'firebase/firestore';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, query, onSnapshot, orderBy, Timestamp } from 'firebase/firestore';
 
-// --- UTILITIES ---
+// --- Configuration and Initialization Logic (Embedded) ---
 
-/**
- * Gets the secure configuration object, prioritizing external Vercel keys,
- * then Canvas globals, with placeholders as a final fallback.
- */
 const getFirebaseConfig = () => {
     // 1. Check for Vercel/Next.js Environment Variables (Highest Priority)
     const externalConfig = {
@@ -26,8 +22,10 @@ const getFirebaseConfig = () => {
         try {
             const canvasConfig = JSON.parse(__firebase_config);
             const initialAuthToken = __initial_auth_token;
-            // Use the Vercel Project ID if set, or the Canvas internal ID as a fallback for the path
-            const finalAppId = externalConfig.projectId || __app_id; 
+            
+            // CRITICAL FIX: Use the Vercel Project ID if set, or the Canvas ID as a fallback for the path
+            const vercelProjectId = externalConfig.projectId;
+            const finalAppId = vercelProjectId || __app_id; 
 
             return { 
                 firebaseConfig: canvasConfig, 
@@ -36,11 +34,11 @@ const getFirebaseConfig = () => {
                 isCanvasEnv: true 
             };
         } catch (e) {
-            console.error("Canvas Global Configuration Error:", e);
+            // console.error("Canvas Global Configuration Error:", e);
         }
     }
 
-    // 3. Use Vercel/Next.js Config (If running on Vercel or locally with .env)
+    // 3. Use Vercel/Next.js Config 
     const hasExternalConfig = externalConfig.projectId && externalConfig.apiKey;
     if (hasExternalConfig) {
         return { 
@@ -51,7 +49,7 @@ const getFirebaseConfig = () => {
         };
     }
 
-    // 4. Fallback to Placeholder/Missing
+    // 4. Fallback 
     return { 
         firebaseConfig: {}, 
         initialAuthToken: undefined, 
@@ -98,9 +96,8 @@ const useFirebase = () => {
 
     // The core initialization logic
     useEffect(() => {
-        // If config is missing, rely on manual error state
-        if (!firebaseConfig || !firebaseConfig.apiKey) {
-            setError("ERROR: Firebase config missing. Ensure Vercel environment variables are set.");
+        if (!firebaseConfig && appId === 'default-app-id') {
+            setError("ERROR: Firebase configuration is missing. Please ensure Vercel environment variables are set.");
             setAuthReady(true);
             return;
         }
@@ -118,8 +115,8 @@ const useFirebase = () => {
                         await signInAnonymously(auth);
                     }
                 } catch (authError) {
-                    console.error("Firebase Auth Failed:", authError);
-                    setError(`Authentication failed. Check setup.`);
+                    // console.error("Firebase Auth Failed:", authError);
+                    setError(`Authentication failed. Check setup: ${authError.code}`);
                 }
             };
 
@@ -136,7 +133,7 @@ const useFirebase = () => {
             });
             
         } catch (e) {
-            console.error("Firebase Initialization Error:", e);
+            // console.error("Firebase Initialization Error:", e);
             setError(`Initialization error: ${e.message}`);
             setAuthReady(true);
         }
@@ -144,6 +141,7 @@ const useFirebase = () => {
 
     return { db, userId, authReady, error, appId };
 };
+
 
 // --- MAIN APP COMPONENT ---
 
@@ -156,7 +154,7 @@ export default function Home() {
   // 2. Fetch Photos in Real-Time
   useEffect(() => {
     if (!db || !authReady) {
-      if (!authReady) return; // Wait for auth to complete
+      if (!authReady) return; 
       if (appId === 'default-app-id') {
          setError("App ID not configured. Check Vercel environment variables.");
          setLoading(false);
@@ -166,7 +164,7 @@ export default function Home() {
     
     // Collection path: /artifacts/{appId}/public/data/photos
     const collectionPath = `artifacts/${appId}/public/data/photos`;
-    console.log("Attempting to read from public collection path:", collectionPath);
+    // console.log("Attempting to read from public collection path:", collectionPath);
 
     const photosCollectionRef = collection(db, collectionPath);
     
@@ -191,8 +189,7 @@ export default function Home() {
       setError(null); 
 
     }, (dbError) => {
-        console.error("Firestore Error fetching photos:", dbError);
-        // This log confirms the permission error is still the security rules issue.
+        // console.error("Firestore Error fetching photos:", dbError);
         setError("Error fetching photos. Please check that Firestore Security Rules allow public read access.");
         setLoading(false);
     });
