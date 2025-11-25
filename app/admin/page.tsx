@@ -4,28 +4,31 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, User } from 'firebase/auth';
 import { getFirestore, collection, addDoc, updateDoc, doc, deleteDoc, query, onSnapshot, orderBy, Timestamp, setDoc } from 'firebase/firestore';
 
-// --- Configuration and Initialization Logic (Embedded) ---
-
-// Define global interface for Canvas variables if running outside Vercel's Node environment
+// --- Global Type Declarations for Canvas Environment (Fixes TS2304/TS2552) ---
 declare global {
     interface Window {
         __app_id?: string;
         __firebase_config?: string;
         __initial_auth_token?: string;
     }
+    // These are globals provided by the Canvas environment for direct access
+    // We only declare the interface above; const declaration is in page.tsx
 }
 
-// Function to sanitize IDs that might contain path separators (like Canvas IDs)
-const sanitizeId = (id: string | undefined): string => {
-    if (!id) return 'default-app-id';
-    // Replace any character that is not alphanumeric, hyphen, or underscore with a hyphen
-    return id.replace(/[^a-zA-Z0-9_-]/g, '-');
-};
+// --- Data Structure Interface (Fixes TS2339) ---
+interface Photo {
+    id: string;
+    url: string;
+    caption: string;
+    isFeatured: boolean;
+    timestamp: Timestamp;
+    userId: string;
+}
 
+// --- Configuration and Initialization Logic (Embedded) ---
 
 const getFirebaseConfig = () => {
     // 1. Check for Vercel/Next.js Environment Variables (Highest Priority)
-    // Use the safest check for process.env (Vercel)
     const externalConfig = {
         apiKey: typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_FIREBASE_API_KEY : undefined,
         authDomain: typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN : undefined,
@@ -34,26 +37,24 @@ const getFirebaseConfig = () => {
     };
     
     // 2. Check for Canvas Globals (Second Priority for Preview)
-    // Use the safest check to access globals via the global object (window/global)
+    // Use the safest check to access globals via typeof to avoid compilation errors on Vercel
     const isCanvasEnv = typeof window !== 'undefined' && typeof window.__app_id !== 'undefined';
     
     if (isCanvasEnv) {
         try {
-            // Access Canvas globals via window object
+            // Access Canvas globals directly via window object
             const canvasConfig = JSON.parse(window.__firebase_config!);
             const initialAuthToken = window.__initial_auth_token;
             
-            // CRITICAL FIX: Sanitize the App ID if running in Canvas, prioritize Vercel Project ID if set
+            // CRITICAL FIX: Use the Vercel Project ID if set, or the Canvas ID as a fallback for the path
             const vercelProjectId = externalConfig.projectId;
-            const rawAppId = vercelProjectId || window.__app_id;
-            const finalAppId = sanitizeId(rawAppId);
-
+            const finalAppId = vercelProjectId || window.__app_id!.replace(/[^a-zA-Z0-9_-]/g, '-'); // Sanitize Canvas ID
+            
             return { 
                 firebaseConfig: canvasConfig, 
                 initialAuthToken, 
                 appId: finalAppId, 
-                isCanvasEnv: true,
-                externalConfig // Pass the detected external config for diagnostics
+                isCanvasEnv: true 
             };
         } catch (e) {
             // console.error("Canvas Global Configuration Error:", e);
@@ -66,9 +67,8 @@ const getFirebaseConfig = () => {
         return { 
             firebaseConfig: externalConfig, 
             initialAuthToken: undefined,
-            appId: sanitizeId(externalConfig.projectId), // Use Project ID for path
-            isCanvasEnv: false,
-            externalConfig
+            appId: externalConfig.projectId, // Use Project ID for path
+            isCanvasEnv: false
         };
     }
 
@@ -77,30 +77,32 @@ const getFirebaseConfig = () => {
         firebaseConfig: {}, 
         initialAuthToken: undefined, 
         appId: 'default-app-id', 
-        isCanvasEnv: false,
-        externalConfig
+        isCanvasEnv: false
     };
 };
 
-// --- Custom Hook ---
+// --- CUSTOM HOOK ---
 
 const useFirebase = () => {
-    const [db, setDb] = useState(null);
-    const [userId, setUserId] = useState(null);
+    // Explicitly define types for state variables
+    const [db, setDb] = useState<any>(null); // Type 'any' for DB handle
+    const [userId, setUserId] = useState<string | null>(null); // Explicitly type userId
     const [authReady, setAuthReady] = useState(false);
-    const [error, setError] = useState(null);
+    const [error, setError] = useState<string | null>(null); // Explicitly allow string or null
     
-    const { firebaseConfig, initialAuthToken, appId, externalConfig } = getFirebaseConfig();
+    const { firebaseConfig, initialAuthToken, appId } = getFirebaseConfig();
 
     // The core initialization logic
     useEffect(() => {
-        if (!firebaseConfig || !firebaseConfig.apiKey) {
+        // Check for required configuration keys before initialization
+        if (!firebaseConfig.apiKey) {
             setError("ERROR: Firebase configuration keys are missing. Please ensure Vercel environment variables are set.");
             setAuthReady(true);
             return;
         }
 
         try {
+            // Attempt to initialize Firebase app
             const app = initializeApp(firebaseConfig);
             const firestoreDb = getFirestore(app);
             const auth = getAuth(app);
@@ -108,11 +110,13 @@ const useFirebase = () => {
             const initializeAuth = async () => {
                 try {
                     if (initialAuthToken) {
+                        // For Canvas preview environment
                         await signInWithCustomToken(auth, initialAuthToken);
                     } else {
+                        // For local/Vercel (public read)
                         await signInAnonymously(auth); 
                     }
-                } catch (authError) {
+                } catch (authError: any) { // Using any type for caught error
                     // console.error("Firebase Auth Failed:", authError);
                     setError(`Authentication failed: ${authError.code}`);
                 }
@@ -123,36 +127,35 @@ const useFirebase = () => {
             onAuthStateChanged(auth, (user) => {
                 if (user) {
                     setUserId(user.uid);
-                    // console.log("Admin User Authenticated:", user.uid);
                 } else {
                     setUserId(null); 
-                    // console.warn("Admin User is NOT fully authenticated (anonymous or logged out).");
                 }
                 setDb(firestoreDb);
                 setAuthReady(true);
             });
             
-        } catch (e) {
+        } catch (e: any) { // Using any type for caught error
             // console.error("Firebase Initialization Error:", e);
             setError(`Initialization error: ${e.message}`);
             setAuthReady(true);
         }
     }, [initialAuthToken, JSON.stringify(firebaseConfig)]);
 
-    return { db, userId, authReady, error, setError, appId, firebaseConfig, externalConfig };
+    // Explicitly returning the full Firebase config object for the diagnostic block
+    return { db, userId, authReady, error, setError, appId, firebaseConfig };
 };
 
 // --- MAIN ADMIN COMPONENT ---
 
 export default function AdminPage() {
-    const { db, userId, authReady, error, setError, appId, firebaseConfig, externalConfig } = useFirebase();
-    const [photos, setPhotos] = useState([]);
+    const { db, userId, authReady, error, setError, appId, firebaseConfig } = useFirebase();
+    const [photos, setPhotos] = useState<Photo[]>([]); // Explicitly typing photos state
     const [formData, setFormData] = useState({ url: '', caption: '' });
     const [message, setMessage] = useState('');
     const [loading, setLoading] = useState(false);
 
-    // Only allow write operations if auth is complete AND a non-null userId exists (not anonymous)
-    // IMPORTANT: The security rules must match this logic: allow write: if request.auth != null;
+    // Only allow write operations if auth is complete AND a non-null userId exists (non-anonymous user)
+    // NOTE: This currently relies on anonymous sign-in returning a UID, which only works if allowed
     const isAuthorized = authReady && userId; 
 
     // 1. Fetch Existing Photos
@@ -166,10 +169,11 @@ export default function AdminPage() {
         const q = query(photosCollectionRef, orderBy('timestamp', 'desc'));
 
         const unsubscribe = onSnapshot(q, (snapshot) => {
-            const fetchedPhotos = snapshot.docs.map(doc => ({
+            const fetchedPhotos: Photo[] = snapshot.docs.map(doc => ({
                 id: doc.id,
-                ...doc.data(),
-                timestamp: doc.data().timestamp instanceof Timestamp ? doc.data().timestamp.toDate() : new Date(),
+                ...doc.data() as Omit<Photo, 'id'>,
+                // Ensure timestamp is converted if necessary for display (though Firestore rules require proper timestamp type)
+                timestamp: doc.data().timestamp,
             }));
             setPhotos(fetchedPhotos);
         }, (dbError) => {
@@ -182,11 +186,11 @@ export default function AdminPage() {
 
     // 2. Form Handlers
 
-    const handleChange = (e) => {
+    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         setFormData({ ...formData, [e.target.name]: e.target.value });
     };
 
-    const handleAddPhoto = async (e) => {
+    const handleAddPhoto = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!isAuthorized) {
             setMessage("Error: Not authorized. Write operations require a non-anonymous sign-in.");
@@ -206,11 +210,11 @@ export default function AdminPage() {
                 ...formData,
                 timestamp: Timestamp.now(),
                 isFeatured: false, 
-                userId: userId 
+                userId: userId // Use the authenticated UID
             });
             setMessage('Photo added successfully!');
             setFormData({ url: '', caption: '' });
-        } catch (error) {
+        } catch (error: any) {
             // console.error("Error adding document: ", error);
             setMessage(`Error adding photo: ${error.message}. Check security rules/user authorization.`);
         } finally {
@@ -240,7 +244,7 @@ export default function AdminPage() {
             await updateDoc(doc(db, collectionPath, id), { isFeatured: true });
 
             setMessage('Photo featured as Photo of the Day!');
-        } catch (error) {
+        } catch (error: any) {
             // console.error("Error featuring photo: ", error);
             setMessage(`Error featuring photo: ${error.message}.`);
         } finally {
@@ -261,7 +265,7 @@ export default function AdminPage() {
             const collectionPath = `artifacts/${appId}/public/data/photos`;
             await deleteDoc(doc(db, collectionPath, id));
             setMessage('Photo deleted successfully!');
-        } catch (error) {
+        } catch (error: any) {
             // console.error("Error deleting photo: ", error);
             setMessage(`Error deleting photo: ${error.message}.`);
         } finally {
@@ -309,7 +313,6 @@ export default function AdminPage() {
                     <p>
                         <span className="font-mono text-slate-400 mr-2">Project ID (Path):</span> 
                         <span className="text-white">{appId}</span>
-                        {/* If the appId is messy, it's the Canvas overriding the Vercel ID */}
                     </p>
                     <p>
                         <span className="font-mono text-slate-400 mr-2">Auth Domain:</span> 
@@ -319,14 +322,14 @@ export default function AdminPage() {
                         <span className="font-mono text-slate-400 mr-2">User ID (Is Admin?):</span> 
                         <span className="text-white">{userId || 'Not Authenticated'}</span>
                     </p>
-                    <div className="text-red-300 mt-2"> {/* FIXED: Replaced p with div */}
+                    <div className="text-red-300 mt-2">
                         *If Project ID is invalid or access fails, ensure:
                         <ul className='list-disc list-inside ml-2 mt-1'>
                             <li>Vercel `NEXT_PUBLIC_FIREBASE_PROJECT_ID` is set.</li>
                             <li>Firebase Auth (Anonymous/Local) is ENABLED.</li>
                             <li>Local domain (`localhost`) is authorized in Firebase Console.</li>
                         </ul>
-                    </div> {/* FIXED: Closing div */}
+                    </div>
                 </div>
             )}
             {/* END DIAGNOSTIC BLOCK */}
@@ -401,7 +404,7 @@ export default function AdminPage() {
                             {/* Thumbnail */}
                             <div className="w-16 h-16 flex-shrink-0 mr-4 rounded-lg overflow-hidden">
                                 <img src={photo.url} alt="Thumbnail" className="w-full h-full object-cover" 
-                                    onError={(e) => { 
+                                    onError={(e: React.SyntheticEvent<HTMLImageElement, Event>) => { 
                                         e.currentTarget.onerror = null; 
                                         e.currentTarget.src = `https://placehold.co/64x64/334155/eab308?text=X`; 
                                     }}
@@ -412,7 +415,8 @@ export default function AdminPage() {
                             <div className="flex-grow min-w-0">
                                 <p className="font-semibold text-white truncate">{photo.caption}</p>
                                 <p className="text-xs text-slate-400 truncate mt-1">ID: {photo.id}</p>
-                                <p className="text-xs text-slate-500">Posted: {new Date(photo.timestamp).toLocaleDateString()}</p>
+                                {/* Timestamp rendering needs safety check for existence before calling toLocaleDateString */}
+                                <p className="text-xs text-slate-500">Posted: {photo.timestamp && typeof photo.timestamp.toDate === 'function' ? photo.timestamp.toDate().toLocaleDateString() : 'N/A'}</p>
                             </div>
 
                             {/* Actions */}

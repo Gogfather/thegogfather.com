@@ -4,6 +4,29 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, query, onSnapshot, orderBy, Timestamp } from 'firebase/firestore';
 
+// --- Global Type Declarations for Canvas Environment (Fixes TS2304/TS2552) ---
+declare global {
+    interface Window {
+        __app_id?: string;
+        __firebase_config?: string;
+        __initial_auth_token?: string;
+    }
+    // These are globals provided by the Canvas environment for direct access
+    const __app_id: string;
+    const __firebase_config: string;
+    const __initial_auth_token: string;
+}
+
+// --- Data Structure Interface (Fixes TS2339) ---
+interface Photo {
+    id: string;
+    url: string;
+    caption: string;
+    isFeatured: boolean;
+    timestamp: Timestamp;
+    userId: string;
+}
+
 // --- Configuration and Initialization Logic (Embedded) ---
 
 const getFirebaseConfig = () => {
@@ -20,13 +43,14 @@ const getFirebaseConfig = () => {
     
     if (isCanvasEnv) {
         try {
+            // Access Canvas globals directly
             const canvasConfig = JSON.parse(__firebase_config);
             const initialAuthToken = __initial_auth_token;
             
             // CRITICAL FIX: Use the Vercel Project ID if set, or the Canvas ID as a fallback for the path
             const vercelProjectId = externalConfig.projectId;
-            const finalAppId = vercelProjectId || __app_id; 
-
+            const finalAppId = vercelProjectId || __app_id.replace(/[^a-zA-Z0-9_-]/g, '-'); // Sanitize Canvas ID
+            
             return { 
                 firebaseConfig: canvasConfig, 
                 initialAuthToken, 
@@ -61,14 +85,15 @@ const getFirebaseConfig = () => {
 /**
  * Groups photos by year and then by month for archiving.
  */
-const groupPhotosByDate = (photos) => {
-    const grouped = {};
+const groupPhotosByDate = (photos: Photo[]) => {
+    const grouped: { [year: string]: { [month: string]: Photo[] } } = {};
 
     photos.forEach(photo => {
-        if (!photo.timestamp || !(photo.timestamp instanceof Timestamp)) return;
+        // Ensure photo is valid and has a timestamp object that can be converted
+        if (!photo.timestamp || typeof photo.timestamp.toDate !== 'function') return;
 
         const date = photo.timestamp.toDate(); 
-        const year = date.getFullYear();
+        const year = date.getFullYear().toString();
         const month = date.toLocaleString('en-US', { month: 'long' });
 
         if (!grouped[year]) {
@@ -87,22 +112,25 @@ const groupPhotosByDate = (photos) => {
 // --- CUSTOM HOOK ---
 
 const useFirebase = () => {
-    const [db, setDb] = useState(null);
-    const [userId, setUserId] = useState(null);
+    // Explicitly define types for state variables
+    const [db, setDb] = useState<any>(null);
+    const [userId, setUserId] = useState<string | null>(null);
     const [authReady, setAuthReady] = useState(false);
-    const [error, setError] = useState(null);
+    const [error, setError] = useState<string | null>(null); // Explicitly allow string or null
     
     const { firebaseConfig, initialAuthToken, appId } = getFirebaseConfig();
 
     // The core initialization logic
     useEffect(() => {
-        if (!firebaseConfig && appId === 'default-app-id') {
-            setError("ERROR: Firebase configuration is missing. Please ensure Vercel environment variables are set.");
+        // Check for required configuration keys before initialization
+        if (!firebaseConfig.apiKey) {
+            setError("ERROR: Firebase configuration keys are missing. Please ensure Vercel environment variables are set.");
             setAuthReady(true);
             return;
         }
 
         try {
+            // Attempt to initialize Firebase app
             const app = initializeApp(firebaseConfig);
             const firestoreDb = getFirestore(app);
             const auth = getAuth(app);
@@ -110,12 +138,13 @@ const useFirebase = () => {
             const initializeAuth = async () => {
                 try {
                     if (initialAuthToken) {
+                        // For Canvas preview environment
                         await signInWithCustomToken(auth, initialAuthToken);
                     } else {
+                        // For local/Vercel (public read)
                         await signInAnonymously(auth);
                     }
-                } catch (authError) {
-                    // console.error("Firebase Auth Failed:", authError);
+                } catch (authError: any) { // Using any type for caught error
                     setError(`Authentication failed: ${authError.code}`);
                 }
             };
@@ -132,13 +161,13 @@ const useFirebase = () => {
                 setAuthReady(true);
             });
             
-        } catch (e) {
-            // console.error("Firebase Initialization Error:", e);
+        } catch (e: any) { // Using any type for caught error
             setError(`Initialization error: ${e.message}`);
             setAuthReady(true);
         }
     }, [initialAuthToken, JSON.stringify(firebaseConfig)]);
 
+    // Explicitly returning the full Firebase config object for the diagnostic block
     return { db, userId, authReady, error, setError, appId, firebaseConfig };
 };
 
@@ -147,15 +176,15 @@ const useFirebase = () => {
 
 export default function Home() {
   const { db, userId, authReady, error, setError, appId, firebaseConfig } = useFirebase();
-  const [photos, setPhotos] = useState([]);
-  const [featuredPhoto, setFeaturedPhoto] = useState(null);
+  const [photos, setPhotos] = useState<Photo[]>([]); // Explicitly typing photos as array of Photo objects
+  const [featuredPhoto, setFeaturedPhoto] = useState<Photo | null>(null); // Explicitly typing featured photo
   const [loading, setLoading] = useState(true);
 
   // 2. Fetch Photos in Real-Time
   useEffect(() => {
     if (!db || !authReady) {
       if (!authReady) return; 
-      if (appId === 'default-app-id') {
+      if (!firebaseConfig.projectId) {
          setError("App ID not configured. Check Vercel environment variables."); 
          setLoading(false);
          return;
@@ -166,6 +195,14 @@ export default function Home() {
     const collectionPath = `artifacts/${appId}/public/data/photos`;
     // console.log("Attempting to read from public collection path:", collectionPath);
 
+    // Guard clause for invalid path segments (final check for Canvas ID issues)
+    if (collectionPath.includes('//') || collectionPath.includes('..')) {
+        setError("Invalid Path Construction. Check Project ID for illegal characters.");
+        setLoading(false);
+        return;
+    }
+
+
     const photosCollectionRef = collection(db, collectionPath);
     
     // Query: Order by timestamp, newest first
@@ -173,9 +210,10 @@ export default function Home() {
 
     // Set up real-time listener
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedPhotos = snapshot.docs.map(doc => ({
+      const fetchedPhotos: Photo[] = snapshot.docs.map(doc => ({
         id: doc.id,
-        ...doc.data()
+        // Assert the data type here for safety
+        ...doc.data() as Omit<Photo, 'id'> 
       }));
 
       // Separate featured photo
@@ -196,12 +234,12 @@ export default function Home() {
 
     // Cleanup subscription on component unmount
     return () => unsubscribe();
-  }, [db, authReady, appId]); 
+  }, [db, authReady, appId, JSON.stringify(firebaseConfig)]); 
 
   const archivedPhotos = groupPhotosByDate(photos);
   const isLoading = loading && !error;
 
-  const renderPhotoGrid = (photoList) => (
+  const renderPhotoGrid = (photoList: Photo[]) => (
     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
         {photoList.map((photo) => (
             <div key={photo.id} className="aspect-square rounded-lg overflow-hidden shadow-xl shadow-slate-900/50 hover:shadow-amber-500/30 transition-shadow border border-slate-800">
@@ -358,7 +396,7 @@ export default function Home() {
         
         {/* Photo Archive by Date */}
         <h3 className="text-3xl font-bold text-white mt-16 mb-8 border-b border-slate-800 pb-4">Archive</h3>
-        {Object.keys(archivedPhotos).sort((a, b) => b - a).map(year => (
+        {Object.keys(archivedPhotos).sort((a: string, b: string) => parseInt(b) - parseInt(a)).map(year => (
             <div key={year} className="mb-12">
                 <h4 className="text-2xl font-bold text-amber-400 mb-6">{year}</h4>
                 {Object.keys(archivedPhotos[year]).map(month => (
