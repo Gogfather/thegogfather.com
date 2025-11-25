@@ -6,8 +6,26 @@ import { getFirestore, collection, addDoc, updateDoc, doc, deleteDoc, query, onS
 
 // --- Configuration and Initialization Logic (Embedded) ---
 
+// Define global interface for Canvas variables if running outside Vercel's Node environment
+declare global {
+    interface Window {
+        __app_id?: string;
+        __firebase_config?: string;
+        __initial_auth_token?: string;
+    }
+}
+
+// Function to sanitize IDs that might contain path separators (like Canvas IDs)
+const sanitizeId = (id) => {
+    if (!id) return 'default-app-id';
+    // Replace any character that is not alphanumeric, hyphen, or underscore with a hyphen
+    return id.replace(/[^a-zA-Z0-9_-]/g, '-');
+};
+
+
 const getFirebaseConfig = () => {
     // 1. Check for Vercel/Next.js Environment Variables (Highest Priority)
+    // Use the safest check for process.env (Vercel)
     const externalConfig = {
         apiKey: typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_FIREBASE_API_KEY : undefined,
         authDomain: typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN : undefined,
@@ -16,18 +34,19 @@ const getFirebaseConfig = () => {
     };
     
     // 2. Check for Canvas Globals (Second Priority for Preview)
-    // CRITICAL: We check for the global variable's existence as a string/type check
-    const isCanvasEnv = typeof window !== 'undefined' && typeof __app_id !== 'undefined';
+    // Use the safest check to access globals via the global object (window/global)
+    const isCanvasEnv = typeof window !== 'undefined' && typeof window.__app_id !== 'undefined';
     
     if (isCanvasEnv) {
         try {
-            // These globals are only accessed if we confirm they exist in the environment
-            const canvasConfig = JSON.parse(__firebase_config);
-            const initialAuthToken = __initial_auth_token;
+            // Access Canvas globals via window object
+            const canvasConfig = JSON.parse(window.__firebase_config!);
+            const initialAuthToken = window.__initial_auth_token;
             
-            // Use the Vercel Project ID if set, or the Canvas ID as a fallback for the path
+            // CRITICAL FIX: Sanitize the App ID if running in Canvas, prioritize Vercel Project ID if set
             const vercelProjectId = externalConfig.projectId;
-            const finalAppId = vercelProjectId || __app_id; 
+            const rawAppId = vercelProjectId || window.__app_id;
+            const finalAppId = sanitizeId(rawAppId);
 
             return { 
                 firebaseConfig: canvasConfig, 
@@ -47,7 +66,7 @@ const getFirebaseConfig = () => {
         return { 
             firebaseConfig: externalConfig, 
             initialAuthToken: undefined,
-            appId: externalConfig.projectId, // Use Project ID for path
+            appId: sanitizeId(externalConfig.projectId), // Use Project ID for path
             isCanvasEnv: false,
             externalConfig
         };
@@ -75,8 +94,8 @@ const useFirebase = () => {
 
     // The core initialization logic
     useEffect(() => {
-        if (!firebaseConfig && appId === 'default-app-id') {
-            setError("ERROR: Firebase configuration is missing. Please ensure Vercel environment variables are set.");
+        if (!firebaseConfig || !firebaseConfig.apiKey) {
+            setError("ERROR: Firebase configuration keys are missing. Please ensure Vercel environment variables are set.");
             setAuthReady(true);
             return;
         }
@@ -133,6 +152,7 @@ export default function AdminPage() {
     const [loading, setLoading] = useState(false);
 
     // Only allow write operations if auth is complete AND a non-null userId exists (not anonymous)
+    // IMPORTANT: The security rules must match this logic: allow write: if request.auth != null;
     const isAuthorized = authReady && userId; 
 
     // 1. Fetch Existing Photos
@@ -283,20 +303,30 @@ export default function AdminPage() {
             )}
             
             {/* DIAGNOSTIC BLOCK */}
-            {error && (
+            {(error || !isAuthorized) && (
                 <div className="bg-slate-800 p-4 rounded mb-6 border border-slate-700 space-y-1 text-xs">
                     <p className="font-bold text-amber-500">CONFIGURATION DIAGNOSTIC</p>
                     <p>
                         <span className="font-mono text-slate-400 mr-2">Project ID (Path):</span> 
                         <span className="text-white">{appId}</span>
+                        {/* If the appId is messy, it's the Canvas overriding the Vercel ID */}
                     </p>
                     <p>
                         <span className="font-mono text-slate-400 mr-2">Auth Domain:</span> 
                         <span className="text-white">{firebaseConfig.authDomain || 'MISSING'}</span>
                     </p>
-                    <p className="text-red-300">
-                        *If Auth Domain is MISSING or INCORRECT, check NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN in .env.local/Vercel.
+                    <p>
+                        <span className="font-mono text-slate-400 mr-2">User ID (Is Admin?):</span> 
+                        <span className="text-white">{userId || 'Not Authenticated'}</span>
                     </p>
+                    <div className="text-red-300 mt-2"> {/* FIXED: Replaced p with div */}
+                        *If Project ID is invalid or access fails, ensure:
+                        <ul className='list-disc list-inside ml-2 mt-1'>
+                            <li>Vercel `NEXT_PUBLIC_FIREBASE_PROJECT_ID` is set.</li>
+                            <li>Firebase Auth (Anonymous/Local) is ENABLED.</li>
+                            <li>Local domain (`localhost`) is authorized in Firebase Console.</li>
+                        </ul>
+                    </div> {/* FIXED: Closing div */}
                 </div>
             )}
             {/* END DIAGNOSTIC BLOCK */}
