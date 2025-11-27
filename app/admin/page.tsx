@@ -23,7 +23,43 @@ interface Photo {
     userId: string;
 }
 
-// Function to sanitize IDs that might contain path separators
+interface Video {
+    id: string;
+    videoId: string;
+    title: string;
+    timestamp: Timestamp;
+    userId: string;
+}
+
+interface MusicTrack {
+    id: string;
+    title: string;
+    subtitle: string;
+    link: string;
+    albumArtUrl?: string;
+    timestamp: Timestamp;
+    userId: string;
+}
+
+interface ArtPiece {
+    id: string;
+    title: string;
+    imageUrl: string;
+    description: string;
+    timestamp: Timestamp;
+    userId: string;
+}
+
+interface BlogPost {
+    id: string;
+    title: string;
+    excerpt: string;
+    content: string; // Full text or markdown
+    timestamp: Timestamp;
+    userId: string;
+}
+
+// Function to sanitize IDs
 const sanitizeId = (id: string | undefined): string => {
     if (!id) return 'default-app-id';
     return id.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -32,7 +68,10 @@ const sanitizeId = (id: string | undefined): string => {
 // --- Configuration and Initialization Logic ---
 
 const getFirebaseConfig = () => {
-    // 1. Check for Vercel/Next.js Environment Variables
+    // HARDCODED FALLBACK: Use this if env vars are missing (e.g. in Canvas Preview)
+    const HARDCODED_PROJECT_ID = "gogfatherweb";
+
+    // 1. Check for Vercel/Next.js Environment Variables (Highest Priority)
     const externalConfig = {
         apiKey: typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_FIREBASE_API_KEY : undefined,
         authDomain: typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN : undefined,
@@ -47,8 +86,10 @@ const getFirebaseConfig = () => {
         try {
             const canvasConfig = JSON.parse(window.__firebase_config!);
             const initialAuthToken = window.__initial_auth_token;
+            
+            // Use Vercel Project ID if available, otherwise HARDCODED ID, otherwise Canvas ID
             const vercelProjectId = externalConfig.projectId;
-            const rawAppId = vercelProjectId || window.__app_id;
+            const rawAppId = vercelProjectId || HARDCODED_PROJECT_ID || window.__app_id;
             const finalAppId = sanitizeId(rawAppId);
 
             return { 
@@ -77,7 +118,7 @@ const getFirebaseConfig = () => {
     return { 
         firebaseConfig: {}, 
         initialAuthToken: undefined, 
-        appId: 'default-app-id', 
+        appId: HARDCODED_PROJECT_ID || 'default-app-id', 
         isCanvasEnv: false
     };
 };
@@ -86,8 +127,9 @@ const getFirebaseConfig = () => {
 
 const useFirebase = () => {
     const [db, setDb] = useState<any>(null);
-    const [auth, setAuth] = useState<any>(null);
+    const [auth, setAuth] = useState<any>(null); // We store the auth instance here
     const [userId, setUserId] = useState<string | null>(null);
+    const [isAnonymous, setIsAnonymous] = useState<boolean>(false);
     const [authReady, setAuthReady] = useState(false);
     const [error, setError] = useState<string | null>(null);
     
@@ -95,7 +137,7 @@ const useFirebase = () => {
 
     useEffect(() => {
         if (!firebaseConfig || !firebaseConfig.apiKey) {
-            setError("ERROR: Firebase configuration keys are missing. Please ensure Vercel environment variables are set.");
+            setError("ERROR: Firebase configuration keys are missing.");
             setAuthReady(true);
             return;
         }
@@ -105,21 +147,16 @@ const useFirebase = () => {
             const firestoreDb = getFirestore(app);
             const firebaseAuth = getAuth(app);
             
-            setAuth(firebaseAuth);
+            setAuth(firebaseAuth); // CRITICAL: Save auth instance to state so we can use it for logout
             
             const initializeAuth = async () => {
                 try {
                     if (initialAuthToken) {
                         await signInWithCustomToken(firebaseAuth, initialAuthToken);
-                    } else {
-                        // Silent fallback: If anonymous auth is disabled in console, this throws.
-                        await signInAnonymously(firebaseAuth); 
                     }
+                    // Note: We do NOT sign in anonymously here. Admin requires real login.
                 } catch (authError: any) {
-                    // Only log actual errors, not "operation not allowed" if we intend to use email login anyway
-                    if (authError.code !== 'auth/operation-not-allowed') {
-                        console.warn("Anonymous Auth Failed (Normal if disabled):", authError.code);
-                    }
+                    setError(`Authentication failed: ${authError.code}`);
                 }
             };
 
@@ -128,8 +165,10 @@ const useFirebase = () => {
             onAuthStateChanged(firebaseAuth, (user) => {
                 if (user) {
                     setUserId(user.uid);
+                    setIsAnonymous(user.isAnonymous);
                 } else {
-                    setUserId(null); 
+                    setUserId(null);
+                    setIsAnonymous(false);
                 }
                 setDb(firestoreDb);
                 setAuthReady(true);
@@ -141,7 +180,7 @@ const useFirebase = () => {
         }
     }, [initialAuthToken, JSON.stringify(firebaseConfig)]);
 
-    return { db, auth, userId, setUserId, authReady, error, setError, appId, firebaseConfig };
+    return { db, auth, userId, setUserId, isAnonymous, authReady, error, setError, appId, firebaseConfig };
 };
 
 // --- LOGIN FORM COMPONENT ---
@@ -167,16 +206,12 @@ const LoginForm: React.FC<LoginFormProps> = ({ auth, setUserId, setAuthError, lo
             const userCredential = await signInWithEmailAndPassword(auth, email, password);
             setUserId(userCredential.user.uid);
         } catch (error: any) {
-            // We suppress the red console error for configuration issues and show a UI message instead
+            console.error("Login error:", error);
             if (error.code === 'auth/operation-not-allowed') {
-                console.warn("Login blocked: Email/Password provider is disabled in Firebase.");
-                setAuthError('CONFIGURATION ERROR: Email/Password provider is disabled. Enable it in Firebase Console -> Authentication -> Sign-in method.');
-            } else if (error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password' || error.code === 'auth/user-not-found') {
+                setAuthError('CONFIGURATION ERROR: Email/Password provider is disabled. Enable it in Firebase Console.');
+            } else if (error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password') {
                 setAuthError('Invalid email or password.');
-            } else if (error.code === 'auth/too-many-requests') {
-                setAuthError('Too many failed attempts. Please try again later.');
             } else {
-                console.error("Login error:", error);
                 setAuthError(`Login failed: ${error.message}`);
             }
         } finally {
@@ -226,144 +261,145 @@ const LoginForm: React.FC<LoginFormProps> = ({ auth, setUserId, setAuthError, lo
 // --- MAIN ADMIN COMPONENT ---
 
 export default function AdminPage() {
-    const { db, auth, userId, setUserId, authReady, error, setError, appId, firebaseConfig } = useFirebase();
+    const { db, auth, userId, setUserId, isAnonymous, authReady, error, setError, appId } = useFirebase();
+    
+    // Data State
     const [photos, setPhotos] = useState<Photo[]>([]);
-    const [formData, setFormData] = useState({ url: '', caption: '' });
+    const [videos, setVideos] = useState<Video[]>([]);
+    const [music, setMusic] = useState<MusicTrack[]>([]);
+    const [art, setArt] = useState<ArtPiece[]>([]);
+    const [blogPosts, setBlogPosts] = useState<BlogPost[]>([]);
+    
+    // Form State
+    const [photoForm, setPhotoForm] = useState({ url: '', caption: '' });
+    const [videoForm, setVideoForm] = useState({ videoId: '', title: '' });
+    const [musicForm, setMusicForm] = useState({ title: '', subtitle: '', link: '', albumArtUrl: '' });
+    const [artForm, setArtForm] = useState({ title: '', imageUrl: '', description: '' });
+    const [blogForm, setBlogForm] = useState({ title: '', excerpt: '', content: '' });
+
     const [message, setMessage] = useState('');
     const [loading, setLoading] = useState(false);
     const [loginLoading, setLoginLoading] = useState(false);
     const [authError, setAuthError] = useState<string | null>(null);
+    const [permissionError, setPermissionError] = useState<string | null>(null);
+    
+    const [activeTab, setActiveTab] = useState<'photos' | 'videos' | 'music' | 'art' | 'blog'>('photos');
 
-    const isAuthorized = authReady && !!userId; 
+    const isAuthorized = authReady && !!userId && !isAnonymous; 
 
-    // 1. Fetch Existing Photos
+    // 1. Fetch Existing Data
     useEffect(() => {
         if (!db || !authReady || appId === 'default-app-id') return;
         
-        const collectionPath = `artifacts/${appId}/public/data/photos`;
+        const subscribeToCollection = (colName: string, setState: Function) => {
+            const q = query(collection(db, `artifacts/${appId}/public/data/${colName}`), orderBy('timestamp', 'desc'));
+            return onSnapshot(q, (snapshot) => {
+                setState(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any })));
+                setPermissionError(null);
+            }, (err) => {
+                console.error(`${colName} Error:`, err);
+                if (err.code === 'permission-denied') {
+                    setPermissionError(`Permission denied for ${colName}. Check Firestore Rules.`);
+                }
+            });
+        };
 
-        const photosCollectionRef = collection(db, collectionPath);
-        const q = query(photosCollectionRef, orderBy('timestamp', 'desc'));
+        const unsubPhotos = subscribeToCollection('photos', setPhotos);
+        const unsubVideos = subscribeToCollection('videos', setVideos);
+        const unsubMusic = subscribeToCollection('music', setMusic);
+        const unsubArt = subscribeToCollection('art', setArt);
+        const unsubBlog = subscribeToCollection('blog', setBlogPosts);
 
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-            const fetchedPhotos: Photo[] = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data() as Omit<Photo, 'id'>,
-                timestamp: doc.data().timestamp,
-            }));
-            setPhotos(fetchedPhotos);
-        }, (dbError) => {
-            // console.error("Firestore Fetch Error:", dbError);
-        });
-
-        return () => unsubscribe();
+        return () => {
+            unsubPhotos();
+            unsubVideos();
+            unsubMusic();
+            unsubArt();
+            unsubBlog();
+        };
     }, [db, authReady, appId]);
 
-    // 2. Form Handlers
-    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        setFormData({ ...formData, [e.target.name]: e.target.value });
+    // Handlers
+    const handleLogout = async () => {
+        if (auth) {
+            try {
+                await signOut(auth);
+                window.location.href = '/';
+            } catch (e) {
+                console.error("Logout Error:", e);
+            }
+        }
     };
 
-    const handleAddPhoto = async (e: React.FormEvent) => {
+    // Generic Add Handler
+    const handleAddItem = async (e: React.FormEvent, collectionName: string, data: any, resetForm: Function) => {
         e.preventDefault();
-        if (!isAuthorized) {
-            setMessage("Error: Not authorized.");
-            return;
-        }
+        if (!isAuthorized) return setMessage("Error: Not authorized.");
         setLoading(true);
-        setMessage('');
-
         try {
-            const collectionPath = `artifacts/${appId}/public/data/photos`;
-            await addDoc(collection(db, collectionPath), {
-                ...formData,
+            await addDoc(collection(db, `artifacts/${appId}/public/data/${collectionName}`), {
+                ...data,
                 timestamp: Timestamp.now(),
-                isFeatured: false, 
                 userId: userId
             });
-            setMessage('Photo added successfully!');
-            setFormData({ url: '', caption: '' });
+            setMessage(`${collectionName} added!`);
+            resetForm();
         } catch (error: any) {
-            setMessage(`Error adding photo: ${error.message}. Check security rules.`);
+            setMessage(`Error: ${error.message}`);
         } finally {
             setLoading(false);
         }
     };
 
+    // Specific Wrappers to process form data before adding
+    const onAddPhoto = (e: React.FormEvent) => handleAddItem(e, 'photos', { ...photoForm, isFeatured: false }, () => setPhotoForm({ url: '', caption: '' }));
+    const onAddVideo = (e: React.FormEvent) => handleAddItem(e, 'videos', videoForm, () => setVideoForm({ videoId: '', title: '' }));
+    const onAddMusic = (e: React.FormEvent) => handleAddItem(e, 'music', musicForm, () => setMusicForm({ title: '', subtitle: '', link: '', albumArtUrl: '' }));
+    const onAddArt = (e: React.FormEvent) => handleAddItem(e, 'art', artForm, () => setArtForm({ title: '', imageUrl: '', description: '' }));
+    const onAddBlog = (e: React.FormEvent) => handleAddItem(e, 'blog', blogForm, () => setBlogForm({ title: '', excerpt: '', content: '' }));
+
+    // Feature/Delete Handlers
     const handleFeaturePhoto = async (id: string) => {
         if (!isAuthorized) return;
         setLoading(true);
         try {
-            const collectionPath = `artifacts/${appId}/public/data/photos`;
             const batchUpdates = photos.filter(p => p.isFeatured).map(p => 
-                updateDoc(doc(db, collectionPath, p.id), { isFeatured: false })
+                updateDoc(doc(db, `artifacts/${appId}/public/data/photos`, p.id), { isFeatured: false })
             );
             await Promise.all(batchUpdates);
-            await updateDoc(doc(db, collectionPath, id), { isFeatured: true });
+            await updateDoc(doc(db, `artifacts/${appId}/public/data/photos`, id), { isFeatured: true });
             setMessage('Photo featured!');
-        } catch (error: any) {
-            setMessage(`Error featuring photo: ${error.message}.`);
-        } finally {
-            setLoading(false);
-        }
+        } finally { setLoading(false); }
     };
 
-    const handleDeletePhoto = async (id: string) => {
-        if (!isAuthorized) return;
+    const handleDelete = async (collectionName: string, id: string) => {
+        if (!isAuthorized || !confirm("Delete this item?")) return;
         setLoading(true);
         try {
-            const collectionPath = `artifacts/${appId}/public/data/photos`;
-            await deleteDoc(doc(db, collectionPath, id));
-            setMessage('Photo deleted successfully!');
-        } catch (error: any) {
-            setMessage(`Error deleting photo: ${error.message}.`);
-        } finally {
-            setLoading(false);
-        }
-    };
-    
-    const handleLogout = async () => {
-        if (auth) {
-            await signOut(auth);
-            setMessage('Logged out.');
-        }
+            await deleteDoc(doc(db, `artifacts/${appId}/public/data/${collectionName}`, id));
+            setMessage('Item deleted.');
+        } finally { setLoading(false); }
     };
 
-    if (!authReady) {
-        return (
-            <div className="min-h-screen bg-slate-950 flex items-center justify-center text-amber-500">
-                <p>Initializing...</p>
-            </div>
-        );
-    }
+    if (!authReady) return <div className="min-h-screen bg-slate-950 flex items-center justify-center text-amber-500">Initializing...</div>;
     
-    if (!userId) {
+    if (!userId || isAnonymous) {
         return (
             <div className="min-h-screen bg-slate-950 text-slate-200 font-sans p-6 md:p-12">
-                 <LoginForm 
-                    auth={auth} 
-                    setUserId={setUserId}
-                    setAuthError={setAuthError} 
-                    loginLoading={loginLoading}
-                    setLoginLoading={setLoginLoading} 
-                />
-                {authError && (
-                    <div className="max-w-md mx-auto mt-4 p-4 bg-red-900/50 border border-red-700 rounded text-red-200 text-center text-sm">
-                        {authError}
-                    </div>
-                )}
+                 <LoginForm auth={auth} setUserId={setUserId} setAuthError={setAuthError} loginLoading={loginLoading} setLoginLoading={setLoginLoading} />
+                {authError && <p className="text-center text-red-500 mt-4">{authError}</p>}
             </div>
         );
     }
+
+    const tabClass = (tab: string) => `pb-2 px-2 font-bold text-lg transition-colors ${activeTab === tab ? 'border-b-2 border-amber-500 text-amber-500' : 'text-slate-400 hover:text-white'}`;
 
     return (
         <div className="min-h-screen bg-slate-950 text-slate-200 font-sans p-6 md:p-12">
             <header className="pb-8 border-b border-slate-800 mb-8 flex justify-between items-center">
                 <div>
-                    <h1 className="text-4xl font-bold tracking-tighter text-white">
-                        THE <span className="text-amber-500">GOGFATHER</span> ADMIN
-                    </h1>
-                    <p className="text-slate-400 mt-1">Status: Authorized</p>
+                    <h1 className="text-4xl font-bold tracking-tighter text-white">THE <span className="text-amber-500">GOGFATHER</span> ADMIN</h1>
+                    <p className="text-slate-400 mt-1">Status: <span className="text-green-400">Authorized</span></p>
                 </div>
                 <div className='flex space-x-3'>
                     <button onClick={handleLogout} className="px-4 py-2 text-sm bg-red-700 hover:bg-red-600 rounded-full transition-colors">Logout</button>
@@ -371,63 +407,153 @@ export default function AdminPage() {
                 </div>
             </header>
 
-            {message && (
-                <div className={`p-4 rounded mb-6 ${message.startsWith('Error') ? 'bg-red-700' : 'bg-green-700'}`}>
-                    {message}
+            {permissionError && (
+                <div className="bg-red-900/80 border border-red-500 text-white p-4 rounded-lg mb-8 shadow-lg">
+                    <h3 className="font-bold text-lg mb-1">⚠️ Access Denied to Database</h3>
+                    <p>{permissionError}</p>
                 </div>
             )}
 
-            <section className="mb-12 bg-slate-900 p-6 rounded-xl border border-slate-800">
-                <h2 className="text-2xl font-bold text-amber-500 mb-4 border-b border-slate-700 pb-2">Add New Photo</h2>
-                <form onSubmit={handleAddPhoto} className="space-y-4">
-                    <input
-                        type="url"
-                        name="url"
-                        placeholder="Image URL"
-                        value={formData.url}
-                        onChange={handleChange}
-                        className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white"
-                        disabled={loading}
-                    />
-                    <input
-                        type="text"
-                        name="caption"
-                        placeholder="Caption"
-                        value={formData.caption}
-                        onChange={handleChange}
-                        className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white"
-                        disabled={loading}
-                    />
-                    <button
-                        type="submit"
-                        className="w-full py-3 rounded-md font-bold transition-colors bg-amber-600 hover:bg-amber-500 text-black"
-                        disabled={loading}
-                    >
-                        {loading ? 'Adding...' : 'Add Photo to Archive'}
-                    </button>
-                </form>
-            </section>
+            {/* TABS */}
+            <div className="flex space-x-6 mb-8 border-b border-slate-800 overflow-x-auto">
+                <button onClick={() => setActiveTab('photos')} className={tabClass('photos')}>Photos</button>
+                <button onClick={() => setActiveTab('videos')} className={tabClass('videos')}>Videos</button>
+                <button onClick={() => setActiveTab('music')} className={tabClass('music')}>Music</button>
+                <button onClick={() => setActiveTab('art')} className={tabClass('art')}>Art</button>
+                <button onClick={() => setActiveTab('blog')} className={tabClass('blog')}>Blog</button>
+            </div>
 
-            <section>
-                <h2 className="text-2xl font-bold text-white mb-4 border-b border-slate-700 pb-2">Current Photo Archive ({photos.length})</h2>
-                <div className="space-y-4">
-                    {photos.map(photo => (
-                        <div key={photo.id} className={`flex flex-col md:flex-row items-start md:items-center p-4 rounded-xl border ${photo.isFeatured ? 'border-amber-500 bg-amber-900/20' : 'border-slate-800 bg-slate-900'}`}>
-                            <img src={photo.url} alt="Thumbnail" className="w-16 h-16 object-cover rounded-lg mr-4" />
-                            <div className="flex-grow">
-                                <p className="font-bold text-white">{photo.caption}</p>
-                                <p className="text-xs text-slate-500">{new Date(photo.timestamp?.toDate()).toLocaleDateString()}</p>
+            {message && <div className="p-4 rounded mb-6 bg-slate-800 border border-slate-600">{message}</div>}
+
+            {/* PHOTOS TAB */}
+            {activeTab === 'photos' && (
+                <>
+                    <section className="mb-12 bg-slate-900 p-6 rounded-xl border border-slate-800">
+                        <h2 className="text-xl font-bold text-amber-500 mb-4">Add Photo</h2>
+                        <form onSubmit={onAddPhoto} className="space-y-4">
+                            <input type="url" required placeholder="Image URL" value={photoForm.url} onChange={(e) => setPhotoForm({...photoForm, url: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
+                            <input type="text" required placeholder="Caption" value={photoForm.caption} onChange={(e) => setPhotoForm({...photoForm, caption: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
+                            <button type="submit" disabled={loading} className="w-full py-3 bg-amber-600 text-black font-bold rounded-md">Add Photo</button>
+                        </form>
+                    </section>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {photos.map(photo => (
+                            <div key={photo.id} className={`flex items-center p-4 rounded-xl border ${photo.isFeatured ? 'border-amber-500 bg-amber-900/10' : 'border-slate-800 bg-slate-900'}`}>
+                                <img src={photo.url} className="w-16 h-16 object-cover rounded-lg mr-4" />
+                                <div className="flex-grow"><p className="font-bold text-white">{photo.caption}</p></div>
+                                <div className="flex flex-col space-y-2">
+                                    {!photo.isFeatured && <button onClick={() => handleFeaturePhoto(photo.id)} className="text-xs bg-slate-700 px-2 py-1 rounded">Feature</button>}
+                                    <button onClick={() => handleDelete('photos', photo.id)} className="text-xs bg-red-900 text-white px-2 py-1 rounded">Delete</button>
+                                </div>
                             </div>
-                            <div className="flex space-x-2 mt-4 md:mt-0">
-                                {!photo.isFeatured && (
-                                    <button onClick={() => handleFeaturePhoto(photo.id)} disabled={loading} className="px-3 py-1 bg-amber-600 text-black rounded text-sm font-bold">Feature</button>
-                                )}
-                                <button onClick={() => handleDeletePhoto(photo.id)} disabled={loading} className="px-3 py-1 bg-red-600 text-white rounded text-sm font-bold">Delete</button>
+                        ))}
+                    </div>
+                </>
+            )}
+
+            {/* VIDEOS TAB */}
+            {activeTab === 'videos' && (
+                <>
+                    <section className="mb-12 bg-slate-900 p-6 rounded-xl border border-slate-800">
+                        <h2 className="text-xl font-bold text-amber-500 mb-4">Add Video</h2>
+                        <form onSubmit={onAddVideo} className="space-y-4">
+                            <input type="text" required placeholder="YouTube ID (e.g. dQw4w9WgXcQ)" value={videoForm.videoId} onChange={(e) => setVideoForm({...videoForm, videoId: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
+                            <input type="text" required placeholder="Title" value={videoForm.title} onChange={(e) => setVideoForm({...videoForm, title: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
+                            <button type="submit" disabled={loading} className="w-full py-3 bg-amber-600 text-black font-bold rounded-md">Add Video</button>
+                        </form>
+                    </section>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {videos.map(video => (
+                            <div key={video.id} className="flex items-center p-4 rounded-xl border border-slate-800 bg-slate-900">
+                                <div className="flex-grow"><p className="font-bold text-white">{video.title}</p><p className="text-xs text-slate-500">{video.videoId}</p></div>
+                                <button onClick={() => handleDelete('videos', video.id)} className="text-xs bg-red-900 text-white px-2 py-1 rounded">Delete</button>
                             </div>
-                        </div>
-                    ))}
-                </div>
-            </section>
+                        ))}
+                    </div>
+                </>
+            )}
+
+            {/* MUSIC TAB */}
+            {activeTab === 'music' && (
+                <>
+                    <section className="mb-12 bg-slate-900 p-6 rounded-xl border border-slate-800">
+                        <h2 className="text-xl font-bold text-amber-500 mb-4">Add Music Track</h2>
+                        <form onSubmit={onAddMusic} className="space-y-4">
+                            <input type="text" required placeholder="Track Title" value={musicForm.title} onChange={(e) => setMusicForm({...musicForm, title: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
+                            <input type="text" required placeholder="Subtitle (e.g. Original Mix)" value={musicForm.subtitle} onChange={(e) => setMusicForm({...musicForm, subtitle: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
+                            <input type="url" required placeholder="Link (Soundcloud/Spotify)" value={musicForm.link} onChange={(e) => setMusicForm({...musicForm, link: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
+                            <input type="url" placeholder="Album Art URL (Optional)" value={musicForm.albumArtUrl} onChange={(e) => setMusicForm({...musicForm, albumArtUrl: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
+                            <button type="submit" disabled={loading} className="w-full py-3 bg-amber-600 text-black font-bold rounded-md">Add Track</button>
+                        </form>
+                    </section>
+                    <div className="space-y-4">
+                        {music.map(track => (
+                            <div key={track.id} className="flex items-center justify-between p-4 rounded-xl border border-slate-800 bg-slate-900">
+                                <div className="flex items-center">
+                                    {track.albumArtUrl && <img src={track.albumArtUrl} className="w-12 h-12 rounded-md mr-4 object-cover" alt="Album Art" />}
+                                    <div>
+                                        <p className="font-bold text-white">{track.title}</p>
+                                        <p className="text-sm text-slate-400">{track.subtitle}</p>
+                                        <a href={track.link} target="_blank" className="text-xs text-amber-500 hover:underline">{track.link}</a>
+                                    </div>
+                                </div>
+                                <button onClick={() => handleDelete('music', track.id)} className="text-xs bg-red-900 text-white px-3 py-2 rounded">Delete</button>
+                            </div>
+                        ))}
+                    </div>
+                </>
+            )}
+
+            {/* ART TAB */}
+            {activeTab === 'art' && (
+                <>
+                    <section className="mb-12 bg-slate-900 p-6 rounded-xl border border-slate-800">
+                        <h2 className="text-xl font-bold text-amber-500 mb-4">Add Art Piece</h2>
+                        <form onSubmit={onAddArt} className="space-y-4">
+                            <input type="text" required placeholder="Title" value={artForm.title} onChange={(e) => setArtForm({...artForm, title: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
+                            <input type="url" required placeholder="Image URL" value={artForm.imageUrl} onChange={(e) => setArtForm({...artForm, imageUrl: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
+                            <textarea required placeholder="Description" value={artForm.description} onChange={(e) => setArtForm({...artForm, description: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white h-24" />
+                            <button type="submit" disabled={loading} className="w-full py-3 bg-amber-600 text-black font-bold rounded-md">Add Art</button>
+                        </form>
+                    </section>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {art.map(piece => (
+                            <div key={piece.id} className="flex items-start p-4 rounded-xl border border-slate-800 bg-slate-900">
+                                <img src={piece.imageUrl} className="w-20 h-20 object-cover rounded mr-4" />
+                                <div className="flex-grow"><p className="font-bold text-white">{piece.title}</p><p className="text-xs text-slate-400 line-clamp-2">{piece.description}</p></div>
+                                <button onClick={() => handleDelete('art', piece.id)} className="text-xs bg-red-900 text-white px-2 py-1 rounded ml-2">Delete</button>
+                            </div>
+                        ))}
+                    </div>
+                </>
+            )}
+
+            {/* BLOG TAB */}
+            {activeTab === 'blog' && (
+                <>
+                    <section className="mb-12 bg-slate-900 p-6 rounded-xl border border-slate-800">
+                        <h2 className="text-xl font-bold text-amber-500 mb-4">Add Blog Post</h2>
+                        <form onSubmit={onAddBlog} className="space-y-4">
+                            <input type="text" required placeholder="Title" value={blogForm.title} onChange={(e) => setBlogForm({...blogForm, title: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
+                            <input type="text" required placeholder="Excerpt (Short Summary)" value={blogForm.excerpt} onChange={(e) => setBlogForm({...blogForm, excerpt: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
+                            <textarea required placeholder="Content" value={blogForm.content} onChange={(e) => setBlogForm({...blogForm, content: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white h-48" />
+                            <button type="submit" disabled={loading} className="w-full py-3 bg-amber-600 text-black font-bold rounded-md">Publish Post</button>
+                        </form>
+                    </section>
+                    <div className="space-y-4">
+                        {blogPosts.map(post => (
+                            <div key={post.id} className="p-4 rounded-xl border border-slate-800 bg-slate-900">
+                                <div className="flex justify-between items-start mb-2">
+                                    <h3 className="font-bold text-white text-lg">{post.title}</h3>
+                                    <button onClick={() => handleDelete('blog', post.id)} className="text-xs bg-red-900 text-white px-3 py-1 rounded">Delete</button>
+                                </div>
+                                <p className="text-sm text-slate-400 mb-2">{post.excerpt}</p>
+                                <p className="text-xs text-slate-600">{new Date(post.timestamp?.toDate()).toLocaleDateString()}</p>
+                            </div>
+                        ))}
+                    </div>
+                </>
+            )}
         </div>
     );
 }
