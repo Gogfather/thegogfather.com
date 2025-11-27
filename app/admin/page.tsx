@@ -68,10 +68,7 @@ const sanitizeId = (id: string | undefined): string => {
 // --- Configuration and Initialization Logic ---
 
 const getFirebaseConfig = () => {
-    // HARDCODED FALLBACK: Use this if env vars are missing (e.g. in Canvas Preview)
-    const HARDCODED_PROJECT_ID = "gogfatherweb";
-
-    // 1. Check for Vercel/Next.js Environment Variables (Highest Priority)
+    // 1. Check for Vercel/Next.js Environment Variables
     const externalConfig = {
         apiKey: typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_FIREBASE_API_KEY : undefined,
         authDomain: typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN : undefined,
@@ -86,10 +83,8 @@ const getFirebaseConfig = () => {
         try {
             const canvasConfig = JSON.parse(window.__firebase_config!);
             const initialAuthToken = window.__initial_auth_token;
-            
-            // Use Vercel Project ID if available, otherwise HARDCODED ID, otherwise Canvas ID
             const vercelProjectId = externalConfig.projectId;
-            const rawAppId = vercelProjectId || HARDCODED_PROJECT_ID || window.__app_id;
+            const rawAppId = vercelProjectId || window.__app_id;
             const finalAppId = sanitizeId(rawAppId);
 
             return { 
@@ -118,7 +113,7 @@ const getFirebaseConfig = () => {
     return { 
         firebaseConfig: {}, 
         initialAuthToken: undefined, 
-        appId: HARDCODED_PROJECT_ID || 'default-app-id', 
+        appId: 'default-app-id', 
         isCanvasEnv: false
     };
 };
@@ -127,9 +122,8 @@ const getFirebaseConfig = () => {
 
 const useFirebase = () => {
     const [db, setDb] = useState<any>(null);
-    const [auth, setAuth] = useState<any>(null); // We store the auth instance here
+    const [auth, setAuth] = useState<any>(null);
     const [userId, setUserId] = useState<string | null>(null);
-    const [isAnonymous, setIsAnonymous] = useState<boolean>(false);
     const [authReady, setAuthReady] = useState(false);
     const [error, setError] = useState<string | null>(null);
     
@@ -137,7 +131,7 @@ const useFirebase = () => {
 
     useEffect(() => {
         if (!firebaseConfig || !firebaseConfig.apiKey) {
-            setError("ERROR: Firebase configuration keys are missing.");
+            setError("ERROR: Firebase configuration keys are missing. Please ensure Vercel environment variables are set.");
             setAuthReady(true);
             return;
         }
@@ -147,16 +141,20 @@ const useFirebase = () => {
             const firestoreDb = getFirestore(app);
             const firebaseAuth = getAuth(app);
             
-            setAuth(firebaseAuth); // CRITICAL: Save auth instance to state so we can use it for logout
+            setAuth(firebaseAuth);
             
             const initializeAuth = async () => {
                 try {
                     if (initialAuthToken) {
                         await signInWithCustomToken(firebaseAuth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(firebaseAuth); 
                     }
-                    // Note: We do NOT sign in anonymously here. Admin requires real login.
                 } catch (authError: any) {
-                    setError(`Authentication failed: ${authError.code}`);
+                     // Only warn if specific error is not 'operation-not-allowed' (which is expected if anon auth is off)
+                     if (authError.code !== 'auth/operation-not-allowed') {
+                        console.warn("Anonymous Auth:", authError.code);
+                     }
                 }
             };
 
@@ -165,10 +163,8 @@ const useFirebase = () => {
             onAuthStateChanged(firebaseAuth, (user) => {
                 if (user) {
                     setUserId(user.uid);
-                    setIsAnonymous(user.isAnonymous);
                 } else {
-                    setUserId(null);
-                    setIsAnonymous(false);
+                    setUserId(null); 
                 }
                 setDb(firestoreDb);
                 setAuthReady(true);
@@ -180,7 +176,7 @@ const useFirebase = () => {
         }
     }, [initialAuthToken, JSON.stringify(firebaseConfig)]);
 
-    return { db, auth, userId, setUserId, isAnonymous, authReady, error, setError, appId, firebaseConfig };
+    return { db, auth, userId, setUserId, authReady, error, setError, appId, firebaseConfig };
 };
 
 // --- LOGIN FORM COMPONENT ---
@@ -261,16 +257,13 @@ const LoginForm: React.FC<LoginFormProps> = ({ auth, setUserId, setAuthError, lo
 // --- MAIN ADMIN COMPONENT ---
 
 export default function AdminPage() {
-    const { db, auth, userId, setUserId, isAnonymous, authReady, error, setError, appId } = useFirebase();
-    
-    // Data State
+    const { db, auth, userId, setUserId, authReady, error, setError, appId, firebaseConfig } = useFirebase();
     const [photos, setPhotos] = useState<Photo[]>([]);
     const [videos, setVideos] = useState<Video[]>([]);
     const [music, setMusic] = useState<MusicTrack[]>([]);
     const [art, setArt] = useState<ArtPiece[]>([]);
     const [blogPosts, setBlogPosts] = useState<BlogPost[]>([]);
     
-    // Form State
     const [photoForm, setPhotoForm] = useState({ url: '', caption: '' });
     const [videoForm, setVideoForm] = useState({ videoId: '', title: '' });
     const [musicForm, setMusicForm] = useState({ title: '', subtitle: '', link: '', albumArtUrl: '' });
@@ -285,7 +278,9 @@ export default function AdminPage() {
     
     const [activeTab, setActiveTab] = useState<'photos' | 'videos' | 'music' | 'art' | 'blog'>('photos');
 
-    const isAuthorized = authReady && !!userId && !isAnonymous; 
+    // Admin is authorized only if Auth is ready AND we have a UID (meaning non-anonymous sign-in is successful)
+    // Since we removed anonymous login in this file's hook, any userId means a real user.
+    const isAuthorized = authReady && !!userId; 
 
     // 1. Fetch Existing Data
     useEffect(() => {
@@ -383,7 +378,7 @@ export default function AdminPage() {
 
     if (!authReady) return <div className="min-h-screen bg-slate-950 flex items-center justify-center text-amber-500">Initializing...</div>;
     
-    if (!userId || isAnonymous) {
+    if (!userId) {
         return (
             <div className="min-h-screen bg-slate-950 text-slate-200 font-sans p-6 md:p-12">
                  <LoginForm auth={auth} setUserId={setUserId} setAuthError={setAuthError} loginLoading={loginLoading} setLoginLoading={setLoginLoading} />
@@ -481,7 +476,7 @@ export default function AdminPage() {
                         <form onSubmit={onAddMusic} className="space-y-4">
                             <input type="text" required placeholder="Track Title" value={musicForm.title} onChange={(e) => setMusicForm({...musicForm, title: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
                             <input type="text" required placeholder="Subtitle (e.g. Original Mix)" value={musicForm.subtitle} onChange={(e) => setMusicForm({...musicForm, subtitle: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
-                            <input type="url" required placeholder="Link (Soundcloud/Spotify)" value={musicForm.link} onChange={(e) => setMusicForm({...musicForm, link: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
+                            <input type="url" required placeholder="Embed URL or Link" value={musicForm.link} onChange={(e) => setMusicForm({...musicForm, link: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
                             <input type="url" placeholder="Album Art URL (Optional)" value={musicForm.albumArtUrl} onChange={(e) => setMusicForm({...musicForm, albumArtUrl: e.target.value})} className="w-full p-3 bg-slate-800 border border-slate-700 rounded-md text-white" />
                             <button type="submit" disabled={loading} className="w-full py-3 bg-amber-600 text-black font-bold rounded-md">Add Track</button>
                         </form>

@@ -71,9 +71,6 @@ interface BlogPost {
 // --- Configuration and Initialization Logic ---
 
 const getFirebaseConfig = () => {
-    // HARDCODED FALLBACK: Use this if env vars are missing (e.g. in Canvas Preview)
-    const HARDCODED_PROJECT_ID = "gogfatherweb";
-
     // 1. Check for Vercel/Next.js Environment Variables (Highest Priority)
     const externalConfig = {
         apiKey: typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_FIREBASE_API_KEY : undefined,
@@ -90,9 +87,10 @@ const getFirebaseConfig = () => {
             const canvasConfig = JSON.parse(__firebase_config);
             const initialAuthToken = __initial_auth_token;
             
-            // FIX: Use Vercel Env -> OR Hardcoded ID -> OR Canvas Session ID
+            // CRITICAL FIX: Use Vercel Env -> Then Canvas Config ProjectID -> Then Fallback to Canvas Session ID
             const vercelProjectId = externalConfig.projectId;
-            const rawAppId = vercelProjectId || HARDCODED_PROJECT_ID || __app_id;
+            const configProjectId = canvasConfig.projectId;
+            const rawAppId = vercelProjectId || configProjectId || __app_id;
             const finalAppId = rawAppId.replace(/[^a-zA-Z0-9_-]/g, '-'); // Sanitize
 
             return { 
@@ -121,7 +119,7 @@ const getFirebaseConfig = () => {
     return { 
         firebaseConfig: {}, 
         initialAuthToken: undefined, 
-        appId: HARDCODED_PROJECT_ID || 'default-app-id', 
+        appId: 'default-app-id', 
         isCanvasEnv: false
     };
 };
@@ -194,7 +192,6 @@ const useFirebase = () => {
 // --- MAIN APP COMPONENT ---
 
 export default function Home() {
-  // Destructure firebaseConfig here
   const { db, userId, authReady, error, setError, appId, firebaseConfig } = useFirebase();
   
   const [photos, setPhotos] = useState<Photo[]>([]);
@@ -206,7 +203,7 @@ export default function Home() {
   const [featuredPhoto, setFeaturedPhoto] = useState<Photo | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // FIX: Define paths here so they are available for the diagnostic render below
+  // Calculate paths for display/use
   const photoPath = `artifacts/${appId}/public/data/photos`;
   const videoPath = `artifacts/${appId}/public/data/videos`;
 
@@ -350,17 +347,39 @@ export default function Home() {
             )}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 {music.map((track) => (
-                    <div key={track.id} className="bg-neutral-950 p-6 border border-neutral-800 hover:border-neutral-700 transition-colors">
-                        <div className="aspect-square bg-neutral-800 mb-4 flex items-center justify-center overflow-hidden">
-                             {track.albumArtUrl ? (
-                                <img src={track.albumArtUrl} alt="Album Art" className="w-full h-full object-cover opacity-90 hover:opacity-100 transition-opacity" />
-                             ) : (
-                                <svg className="w-12 h-12 text-neutral-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
-                             )}
-                        </div>
+                    <div key={track.id} className="bg-neutral-950 p-6 border border-neutral-800 hover:border-neutral-700 transition-colors flex flex-col">
+                        {/* If it looks like an embedded player URL, use an iframe */}
+                        {(track.link.includes('soundcloud.com') || track.link.includes('spotify.com')) ? (
+                            <div className="w-full h-40 mb-4 bg-neutral-900">
+                                <iframe 
+                                    width="100%" 
+                                    height="100%" 
+                                    scrolling="no" 
+                                    frameBorder="no" 
+                                    allow="autoplay" 
+                                    src={track.link} 
+                                    title={track.title}
+                                    className="rounded-md"
+                                ></iframe>
+                            </div>
+                        ) : (
+                            /* Fallback to image/icon if not a player URL */
+                            <div className="aspect-square bg-neutral-800 mb-4 flex items-center justify-center overflow-hidden">
+                                {track.albumArtUrl ? (
+                                    <img src={track.albumArtUrl} alt="Album Art" className="w-full h-full object-cover opacity-90 hover:opacity-100 transition-opacity" />
+                                ) : (
+                                    <svg className="w-12 h-12 text-neutral-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
+                                )}
+                            </div>
+                        )}
+
                         <h3 className="text-white font-bold text-lg truncate">{track.title}</h3>
                         <p className="text-neutral-500 text-sm mb-4 truncate">{track.subtitle}</p>
-                        <a href={track.link} target="_blank" className="text-amber-600 text-xs font-bold uppercase tracking-widest hover:text-white transition-colors block mt-auto">Play Track &rarr;</a>
+                        
+                        {/* Only show external link if we aren't already embedding it, or as an alternative */}
+                        <a href={track.link} target="_blank" className="text-amber-600 text-xs font-bold uppercase tracking-widest hover:text-white transition-colors block mt-auto">
+                            {(track.link.includes('soundcloud') || track.link.includes('spotify')) ? 'Open Source' : 'Play Track'} &rarr;
+                        </a>
                     </div>
                 ))}
             </div>
