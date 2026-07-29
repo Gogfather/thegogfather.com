@@ -13,6 +13,8 @@ export default function FeatureCarousel() {
   const [showLeftControl, setShowLeftControl] = useState(false);
   const [showRightControl, setShowRightControl] = useState(false);
   const hoverScrollIntervalRef = useRef<number | null>(null);
+  const dragStateRef = useRef<{ pointerId: number; startX: number; startOffset: number } | null>(null);
+  const justDraggedRef = useRef(false);
 
   const selectedItem = useMemo(
     () => featureCards.find((card) => card.slug === selectedSlug) ?? featureCards[0],
@@ -61,9 +63,11 @@ export default function FeatureCarousel() {
     return filteredCards;
   }, [filteredCards, selectedSlug]);
 
+  const getMaxScroll = () => Math.max(0, (visibleCards.length - 4) * 220);
+
   const handleScroll = (direction: 'left' | 'right') => {
     const delta = direction === 'left' ? -220 : 220;
-    const maxScroll = Math.max(0, (visibleCards.length - 4) * 220);
+    const maxScroll = getMaxScroll();
 
     setScrollOffset((current) => {
       const nextOffset = current + delta;
@@ -73,6 +77,52 @@ export default function FeatureCarousel() {
 
       return Math.min(maxScroll, nextOffset);
     });
+  };
+
+  const handleDragStart = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) {
+      return;
+    }
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startOffset: scrollOffset,
+    };
+    justDraggedRef.current = false;
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleDragMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const delta = dragState.startX - event.clientX;
+    if (Math.abs(delta) > 5) {
+      justDraggedRef.current = true;
+    }
+
+    const maxScroll = getMaxScroll();
+    const nextOffset = Math.min(maxScroll, Math.max(0, dragState.startOffset + delta));
+    setScrollOffset(nextOffset);
+  };
+
+  const handleDragEnd = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    dragStateRef.current = null;
+  };
+
+  const handleCardClick = (slug: string) => {
+    if (justDraggedRef.current) {
+      justDraggedRef.current = false;
+      return;
+    }
+    setSelectedSlug(slug);
   };
 
   const clearHoverScroll = () => {
@@ -198,7 +248,7 @@ export default function FeatureCarousel() {
             </div>
 
             <div
-              className="relative overflow-hidden pb-2"
+              className="relative touch-pan-y select-none overflow-hidden pb-2 active:cursor-grabbing"
               onMouseEnter={() => {
                 setShowLeftControl(true);
                 setShowRightControl(true);
@@ -207,6 +257,10 @@ export default function FeatureCarousel() {
                 setShowLeftControl(false);
                 setShowRightControl(false);
               }}
+              onPointerDown={handleDragStart}
+              onPointerMove={handleDragMove}
+              onPointerUp={handleDragEnd}
+              onPointerCancel={handleDragEnd}
             >
               <button
                 type="button"
@@ -235,7 +289,7 @@ export default function FeatureCarousel() {
                     <button
                       key={card.slug}
                       type="button"
-                      onClick={() => setSelectedSlug(card.slug)}
+                      onClick={() => handleCardClick(card.slug)}
                       className={`group min-w-[180px] max-w-[220px] flex-1 overflow-hidden rounded-[1.35rem] border text-left transition ${
                         isActive
                           ? 'border-amber-500/70 shadow-lg shadow-amber-500/10'
@@ -246,6 +300,7 @@ export default function FeatureCarousel() {
                         <img
                           src={card.image}
                           alt={card.title}
+                          draggable={false}
                           className={`h-full w-full object-cover transition duration-500 ${
                             isActive ? 'scale-105' : 'group-hover:scale-105'
                           }`}
